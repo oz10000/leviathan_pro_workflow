@@ -1,65 +1,53 @@
 import streamlit as st
-from signal_engine import generate_signal
-from timing_engine import estimate_next_signal
+from scanner_engine import scan_top_opportunities, EXCHANGE as current_exchange
 from audit_engine import audit_last_signal
-from risk_engine import optimal_leverage
 from state_manager import save_last_signal, load_last_signal, append_audit_result
 from data_loader import load_cached_data
+import pandas as pd
 
-st.set_page_config(page_title="LEVIATHAN SIGNAL ENGINE", layout="wide")
-st.title("🐋 LEVIATHAN SIGNAL ENGINE v1 – Señales + Auditoría Temporal")
+st.set_page_config(page_title="LEVIATHAN Multi‑Exchange Scanner", layout="wide")
+st.title("🐋 LEVIATHAN – Scanner Multi‑Activo")
 
-if st.button("🔍 Analizar mercado"):
-    df = load_cached_data("BTC", "5m", 500)
+# Selector de exchange
+exchange = st.selectbox("Exchange", ["binance", "bybit"], index=0 if current_exchange=="binance" else 1)
+if exchange != current_exchange:
+    # Actualizar configuración en caliente
+    from config import EXCHANGE as cfg_exchange
+    cfg_exchange = exchange
+    # En un script real, se modificaría config.py; aquí solo para la demo.
 
-    # 1. Generate current signal
-    signal = generate_signal(df)
-    save_last_signal(signal)
+if st.button("🔍 Escanear Top 100"):
+    with st.spinner("Analizando los 100 activos más líquidos..."):
+        top_signals = scan_top_opportunities()
+        if not top_signals:
+            st.warning("No se encontraron señales por encima del umbral.")
+        else:
+            st.success(f"Señales detectadas en {exchange.upper()}:")
+            for i, sig in enumerate(top_signals, 1):
+                col1, col2 = st.columns([1, 2])
+                col1.metric(f"#{i} {sig['symbol']}", sig['signal'], delta=f"Score {sig['score']:.1f}")
+                col2.write(f"💲 {sig['price']:.4f}   ⚡ {sig['leverage']:.1f}x   ⏳ próx. {sig['next_min']}min")
+                # Guardar señal para auditoría futura (opcional)
+                save_last_signal(sig)
 
-    # 2. Estimate time until next signal
-    next_min = estimate_next_signal(df)
-
-    # 3. Audit previous signal
+    # Auditoría de la última señal almacenada (de cualquier activo)
+    st.divider()
+    st.subheader("📊 Auditoría de última señal")
     last = load_last_signal()
-    # Get subsequent data (simulated: next 6 candles of 5min = 30min)
-    if last and "timestamp" in last:
+    if last:
+        # Cargar datos posteriores (simulado con data_loader)
+        df = load_cached_data(last.get("symbol","BTC"), "5m", 50)
         mask = df["ts"] > last["timestamp"]
         future_df = df[mask].head(6)
-    else:
-        future_df = df.iloc[:0]
-    audit = audit_last_signal(last, future_df) if last else None
-    if audit:
-        audit["signal_timestamp"] = last["timestamp"]
-        audit["signal"] = last["signal"]
-        append_audit_result(audit)
-
-    # ---- UI ----
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("📡 SEÑAL ACTUAL")
-        if signal["signal"] == "WAIT":
-            st.warning("⏳ WAIT – No hay entrada clara")
+        audit = audit_last_signal(last, future_df)
+        if audit:
+            audit["signal"] = last["signal"]
+            append_audit_result(audit)
+            colA, colB = st.columns(2)
+            colA.metric("Resultado", audit["result"], delta=f"{audit['pnl_pct']}%")
+            colB.metric("Mov. favorable máx.", f"{audit['max_favorable']}%")
+            st.write(f"Adverso máx.: {audit['max_adverse']}%")
         else:
-            st.success(f"✅ {signal['signal']}")
-        st.write(f"**Score:** {signal['score']:.1f}")
-        st.write(f"**Precio de referencia:** ${signal['price']:.2f}")
-
-        volatility = df["close"].pct_change().std()
-        leverage = optimal_leverage(signal["score"], volatility)
-        st.metric("⚡ Apalancamiento óptimo", f"{leverage:.1f}x")
-
-    with col2:
-        st.subheader("⏱️ CICLO TEMPORAL")
-        st.write(f"⏳ Próxima señal estimada en: **{next_min} minutos**")
-        st.caption("Basado en volatilidad y fuerza de tendencia")
-
-    st.divider()
-    st.subheader("📊 AUDITORÍA DE LA SEÑAL ANTERIOR")
-    if audit:
-        colA, colB = st.columns(2)
-        colA.metric("Resultado", audit["result"], delta=audit["pnl_pct"])
-        colB.metric("Variación máxima favorable", f"{audit['max_favorable']}%")
-        st.write(f"Movimiento adverso máximo: {audit['max_adverse']}%")
+            st.info("Aún no han transcurrido 30 minutos desde la última señal.")
     else:
-        st.info("Aún no hay señal previa para auditar.")
+        st.info("No hay señal previa almacenada.")
