@@ -12,19 +12,19 @@ st.title("🐋 LEVIATHAN SIGNAL ENGINE v1 – Señales + Auditoría Temporal")
 if st.button("🔍 Analizar mercado"):
     df = load_cached_data("BTC", "5m", 500)
 
-    # 1. Generar señal actual
+    # 1. Generate current signal
     signal = generate_signal(df)
     save_last_signal(signal)
 
-    # 2. Tiempo estimado hasta próxima señal
+    # 2. Estimate time until next signal
     next_min = estimate_next_signal(df)
 
-    # 3. Auditoría de la señal anterior
+    # 3. Audit previous signal
     last = load_last_signal()
-    # Obtener datos posteriores a la última señal (simulado: tomamos las siguientes 6 velas)
+    # Get subsequent data (simulated: next 6 candles of 5min = 30min)
     if last and "timestamp" in last:
         mask = df["ts"] > last["timestamp"]
-        future_df = df[mask].head(6)  # 6 velas de 5min = 30min
+        future_df = df[mask].head(6)
     else:
         future_df = df.iloc[:0]
     audit = audit_last_signal(last, future_df) if last else None
