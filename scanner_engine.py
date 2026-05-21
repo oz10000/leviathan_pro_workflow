@@ -16,8 +16,7 @@ def fetch_top_symbols():
         url = "https://api.bybit.com/v5/market/tickers?category=linear"
         resp = requests.get(url, timeout=10).json()
         symbols = [item["symbol"] for item in resp["result"]["list"] if item["symbol"].endswith("USDT")]
-        # Bybit no devuelve volumen en esta llamada, usamos el orden por defecto (aproximadamente por volumen)
-        return symbols[:TOP_N]
+        return symbols[:TOP_N]  # Bybit ordena aprox. por volumen
     return []
 
 def fetch_latest_candle(symbol):
@@ -33,7 +32,7 @@ def fetch_latest_candle(symbol):
         resp = requests.get(url).json()
         data = resp["result"]["list"]
         df = pd.DataFrame(data, columns=["ts","open","high","low","close","volume","turnover"])
-        df = df.iloc[::-1]  # Ordenar cronológicamente
+        df = df.iloc[::-1]  # Orden cronológico
         for c in ["open","high","low","close","volume"]:
             df[c] = pd.to_numeric(df[c])
         df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms")
