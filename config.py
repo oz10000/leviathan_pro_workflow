@@ -8,6 +8,25 @@ API_KEY = ""
 API_SECRET = ""
 PASSPHRASE = ""
 
+# ==================== ENDPOINTS SIN RESTRICCIÓN GEOGRÁFICA ====================
+# Streamlit Cloud está alojado en EEUU. Binance.com y Bybit.com bloquean IPs de EEUU.
+# Para endpoints públicos de solo lectura, ambos exchanges ofrecen dominios alternativos:
+#   - Binance: data-api.binance.vision  (documentado en developers.binance.com)
+#   - Bybit:   api.bytick.com           (documentado en bybit-exchange.github.io)
+
+ENDPOINTS = {
+    "binance": {
+        "base_url": "https://data-api.binance.vision",
+        "ticker_path": "/api/v3/ticker/24hr",
+        "klines_path": "/api/v3/klines",
+    },
+    "bybit": {
+        "base_url": "https://api.bytick.com",
+        "ticker_path": "/v5/market/tickers",
+        "klines_path": "/v5/market/kline",
+    },
+}
+
 # ==================== PARÁMETROS DEL MOTOR DE SEÑAL ====================
 SCORE_THRESHOLD = 68              # Umbral mínimo para emitir BUY/SELL
 TOP_N = 100                       # Número de activos a escanear (top por volumen)
