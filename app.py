@@ -10,7 +10,6 @@ import config
 
 st.set_page_config(page_title="LEVIATHAN SIGNAL", layout="centered", initial_sidebar_state="collapsed")
 
-# Tema oscuro profesional minimalista
 st.markdown(f"""
 <style>
     .stApp {{ background-color: #0E1117; color: #F0F2F6; }}
@@ -31,7 +30,6 @@ st.markdown(f"""
 
 st.title("🐋 LEVIATHAN SIGNAL")
 
-# Selección de exchange con botones compactos
 col1, col2 = st.columns(2)
 with col1:
     if st.button("🔶 Binance"):
@@ -41,26 +39,24 @@ with col2:
         config.EXCHANGE = "bybit"
 st.caption(f"Exchange: **{config.EXCHANGE.upper()}**")
 
-# Inicializar estado de señal activa
 if "active_signal" not in st.session_state:
     st.session_state.active_signal = None
     st.session_state.signal_expiry = None
 
-# Botón de escaneo
 if st.button("🔍 Escanear Mercado", use_container_width=True):
     with st.spinner("Escaneando los 100 activos más líquidos..."):
         top_signals, log = scan_top_opportunities_live(
-            progress_callback=lambda p, msg: None  # sin barra, solo espera
+            progress_callback=lambda p, msg: None
         )
         if top_signals:
             best = top_signals[0]
             st.session_state.active_signal = best
-            st.session_state.signal_expiry = time.time() + best["duration_min"] * 60
+            # Usar duración mínima 5 minutos si falta la clave
+            st.session_state.signal_expiry = time.time() + best.get("duration_min", 5) * 60
             save_last_signal(best)
         else:
             st.warning("No se encontraron señales que cumplan los criterios.")
 
-# Mostrar señal activa
 if st.session_state.active_signal:
     sig = st.session_state.active_signal
     remaining = st.session_state.signal_expiry - time.time()
@@ -88,7 +84,6 @@ if st.session_state.active_signal:
         </div>
         """, unsafe_allow_html=True)
 
-        # Instrucciones paso a paso
         with st.expander("✅ Cómo ejecutar esta operación"):
             st.markdown("""
             1. Abrir el exchange seleccionado.
@@ -108,12 +103,10 @@ if st.session_state.active_signal:
 else:
     st.info("No hay señal activa. Escanea el mercado para recibir una oportunidad.")
 
-# Auditoría simple de la última señal
 st.divider()
 st.subheader("📊 Auditoría de la última señal")
 last = load_last_signal()
 if last:
-    # Convertir timestamp a datetime
     try:
         last_ts = datetime.fromisoformat(last["timestamp"])
     except (ValueError, KeyError):
