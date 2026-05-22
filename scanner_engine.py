@@ -24,7 +24,6 @@ def fetch_top_symbols():
             resp = requests.get(url, headers=HEADERS, timeout=15)
             resp.raise_for_status()
             data = resp.json()
-            # Filtrar pares USDT válidos
             symbols = [
                 s for s in data
                 if isinstance(s, dict)
@@ -33,7 +32,6 @@ def fetch_top_symbols():
                 and float(s.get("askPrice", 1)) > 0
                 and (float(s["askPrice"]) - float(s["bidPrice"])) / float(s["askPrice"]) * 100 <= config.MAX_SPREAD_PCT
             ]
-            # Eliminar stablecoins y pares no deseados
             symbols = [s for s in symbols if s["symbol"].replace("USDT", "") not in config.BLACKLIST]
             sorted_syms = sorted(symbols, key=lambda x: float(x["quoteVolume"]), reverse=True)
             return [s["symbol"] for s in sorted_syms[: config.TOP_N]]
@@ -43,19 +41,32 @@ def fetch_top_symbols():
             resp = requests.get(url, headers=HEADERS, params=params, timeout=15)
             resp.raise_for_status()
             data = resp.json()
-            items = data["result"]["list"]
-            symbols = [
-                item for item in items
-                if item.get("symbol", "").endswith("USDT")
-                and float(item.get("turnover24h", 0) or 0) >= config.MIN_VOLUME_USD
-            ]
-            # Eliminar stablecoins
+
+            # Validación de la estructura de la respuesta
+            if data.get("retCode") != 0:
+                return {"error": f"Bybit API error: {data.get('retMsg', 'Unknown')}"}
+
+            items = data.get("result", {}).get("list", [])
+            if not items:
+                return {"error": "Bybit API returned empty ticker list"}
+
+            symbols = []
+            for item in items:
+                symbol = item.get("symbol", "")
+                turnover = float(item.get("turnover24h", 0) or 0)
+                if symbol.endswith("USDT") and turnover >= config.MIN_VOLUME_USD:
+                    symbols.append(item)
+
+            # Blacklist
             symbols = [s for s in symbols if s["symbol"].replace("USDT", "") not in config.BLACKLIST]
+
             sorted_syms = sorted(symbols, key=lambda x: float(x.get("turnover24h", 0) or 0), reverse=True)
             return [s["symbol"] for s in sorted_syms[: config.TOP_N]]
 
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Request failed: {str(e)}"}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"Unexpected error: {str(e)}"}
 
     return {"error": "Exchange no soportado"}
 
@@ -73,10 +84,7 @@ def fetch_latest_candle(symbol):
                 return None
             df = pd.DataFrame(
                 data,
-                columns=[
-                    "ts", "open", "high", "low", "close", "volume",
-                    "_", "_", "_", "_", "_", "_"
-                ]
+                columns=["ts", "open", "high", "low", "close", "volume", "_", "_", "_", "_", "_", "_"]
             )
             for c in ["open", "high", "low", "close", "volume"]:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -95,6 +103,8 @@ def fetch_latest_candle(symbol):
             resp = requests.get(url, headers=HEADERS, timeout=10)
             resp.raise_for_status()
             data = resp.json()
+            if data.get("retCode") != 0:
+                return None
             items = data.get("result", {}).get("list", [])
             if not items:
                 return None
@@ -115,13 +125,12 @@ def fetch_latest_candle(symbol):
 
 
 def scan_top_opportunities_live(progress_callback=None):
-    """Escanea los top 100 y devuelve las 3 mejores señales certificadas (score >= threshold)."""
     symbols_or_error = fetch_top_symbols()
 
     if isinstance(symbols_or_error, dict) and "error" in symbols_or_error:
         error_msg = symbols_or_error["error"]
         if progress_callback:
-            progress_callback(1.0, f"Error al obtener símbolos: {error_msg}")
+            progress_callback(1.0, f"Error: {error_msg}")
         return [], {
             "scanned": 0, "errors": 1, "low_score": 0, "no_data": 0,
             "error_msg": error_msg
@@ -130,7 +139,7 @@ def scan_top_opportunities_live(progress_callback=None):
     symbols = symbols_or_error
     if not symbols:
         if progress_callback:
-            progress_callback(1.0, "No se pudieron obtener símbolos del exchange.")
+            progress_callback(1.0, "No se pudieron obtener símbolos.")
         return [], {
             "scanned": 0, "errors": 1, "low_score": 0, "no_data": 0,
             "error_msg": "Lista vacía de símbolos"
@@ -156,7 +165,6 @@ def scan_top_opportunities_live(progress_callback=None):
         stats["scanned"] += 1
 
         raw = generate_signal(df, threshold=config.SCORE_THRESHOLD)
-        # Solo conservamos señales que superen el umbral
         if raw["signal"] == "WAIT":
             stats["low_score"] += 1
             continue
