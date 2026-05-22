@@ -11,7 +11,7 @@ import config
 
 st.set_page_config(page_title="LEVIATHAN SIGNAL", layout="centered", initial_sidebar_state="collapsed")
 
-# Soft dark theme
+# Tema profesional suave (gris oscuro, no negro puro)
 st.markdown(f"""
 <style>
     .stApp {{
@@ -37,6 +37,7 @@ st.markdown(f"""
 
 st.title("🐋 LEVIATHAN SIGNAL")
 
+# Selector de exchange
 col1, col2 = st.columns(2)
 with col1:
     if st.button("🔶 Binance"):
@@ -50,7 +51,7 @@ if "active_signal" not in st.session_state:
     st.session_state.active_signal = None
     st.session_state.signal_expiry = None
 
-# ==================== MAIN SCAN ====================
+# ==================== ESCANEO PRINCIPAL ====================
 if st.button("🔍 Escanear Mercado", use_container_width=True):
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -73,14 +74,15 @@ if st.button("🔍 Escanear Mercado", use_container_width=True):
         st.success(f"Señal certificada: **{best['signal']}** en **{best['symbol']}**")
     else:
         st.warning("No se encontraron señales que superen el umbral de calidad.")
-        with st.expander("Diagnóstico"):
+        with st.expander("📋 Diagnóstico del escaneo"):
             st.write(f"Activos escaneados: {log.get('scanned', 0)}")
-            st.write(f"Errores: {log.get('errors', 0)}")
-            st.write(f"Descartados por score bajo: {log.get('low_score', 0)}")
+            st.write(f"Errores de API: {log.get('errors', 0)}")
+            st.write(f"Señales descartadas (score bajo): {log.get('low_score', 0)}")
+            st.write(f"Activos sin datos suficientes: {log.get('no_data', 0)}")
             if log.get("error_msg"):
-                st.error(log["error_msg"])
+                st.error(f"Mensaje del error: {log['error_msg']}")
 
-# ==================== ACTIVE SIGNAL DISPLAY ====================
+# ==================== SEÑAL ACTIVA ====================
 if st.session_state.active_signal and st.session_state.signal_expiry is not None:
     sig = st.session_state.active_signal
     remaining = st.session_state.signal_expiry - time.time()
@@ -111,7 +113,7 @@ if st.session_state.active_signal and st.session_state.signal_expiry is not None
         with st.expander("📋 Cómo ejecutar esta operación"):
             st.markdown("""
             1. Abre el exchange seleccionado (Binance/Bybit).
-            2. Verifica que estás en la cuenta correcta (DEMO/LIVE).
+            2. Verifica que estás en la cuenta correcta (DEMO / LIVE).
             3. Busca el activo exacto.
             4. Configura: Entrada, Take Profit y Stop Loss según los valores de arriba.
             5. Ajusta el apalancamiento exactamente al recomendado.
@@ -123,43 +125,49 @@ if st.session_state.active_signal and st.session_state.signal_expiry is not None
     else:
         st.session_state.active_signal = None
         st.session_state.signal_expiry = None
-        st.info("Señal expirada. Escanea de nuevo.")
+        st.info("La señal expiró. Escanea de nuevo.")
 else:
-    st.info("No hay señal activa. Presiona 'Escanear Mercado' para buscar una oportunidad.")
+    st.info("No hay señal activa. Presiona **'Escanear Mercado'** para buscar una oportunidad.")
 
-# ==================== MARKET RANKING (Top 5 without threshold) ====================
+# ==================== RANKING DE MERCADO (informativo) ====================
 st.divider()
 st.subheader("📊 Ranking de Mercado (informativo)")
 
 if st.button("Actualizar ranking", use_container_width=True):
-    with st.spinner("Calculando puntuaciones..."):
+    with st.spinner("Calculando puntuaciones del mercado..."):
         syms = fetch_top_symbols()
-        all_scores = []
-        for sym in (syms[:30] if isinstance(syms, list) else []):
-            df = fetch_latest_candle(sym)
-            if df is not None and len(df) >= 20:
-                raw = generate_signal(df, threshold=0)   # force generation for ranking
-                if raw["signal"] != "WAIT":
-                    is_certified = raw["score"] >= config.SCORE_THRESHOLD
-                    all_scores.append({
-                        "symbol": sym.replace("USDT", ""),
-                        "direction": raw["signal"],
-                        "score": raw["score"],
-                        "price": raw["price"],
-                        "certified": is_certified,
-                        "tp": raw["price"] + (1 if raw["signal"]=="BUY" else -1) * config.TP_ATR * raw["atr"],
-                        "sl": raw["price"] - (1 if raw["signal"]=="BUY" else -1) * config.SL_ATR * raw["atr"],
-                    })
-        all_scores.sort(key=lambda x: x["score"], reverse=True)
-        top5 = all_scores[:5]
-
-        if top5:
-            for i, s in enumerate(top5, 1):
-                cert_badge = "✅" if s["certified"] else "❌"
-                st.write(f"{i}. {cert_badge} {s['symbol']} — {s['direction']} | Score: {s['score']:.1f} | Certificada: {'Sí' if s['certified'] else 'No'}")
-            st.caption("✅ = Supera el umbral (68). ❌ = No supera el umbral. LEVIATHAN solo emite señales certificadas.")
+        if isinstance(syms, dict) and "error" in syms:
+            st.error(f"No se pudieron obtener los símbolos: {syms['error']}")
         else:
-            st.warning("No se pudo obtener puntuaciones.")
+            all_scores = []
+            for sym in (syms[:30] if syms else []):
+                df = fetch_latest_candle(sym)
+                if df is not None and len(df) >= 20:
+                    # Forzamos threshold a 0 para obtener todos los cálculos
+                    raw = generate_signal(df, threshold=0)
+                    if raw["signal"] != "WAIT":
+                        is_certified = raw["score"] >= config.SCORE_THRESHOLD
+                        tp = raw["price"] + (1 if raw["signal"] == "BUY" else -1) * config.TP_ATR * raw["atr"]
+                        sl = raw["price"] - (1 if raw["signal"] == "BUY" else -1) * config.SL_ATR * raw["atr"]
+                        all_scores.append({
+                            "symbol": sym.replace("USDT", ""),
+                            "direction": raw["signal"],
+                            "score": raw["score"],
+                            "price": raw["price"],
+                            "certified": is_certified,
+                            "tp": tp,
+                            "sl": sl,
+                        })
+            all_scores.sort(key=lambda x: x["score"], reverse=True)
+            top5 = all_scores[:5]
+
+            if top5:
+                for i, s in enumerate(top5, 1):
+                    cert_badge = "✅" if s["certified"] else "❌"
+                    st.write(f"{i}. {cert_badge} {s['symbol']} — {s['direction']} | Score: {s['score']:.1f} | {'CERTIFICADA' if s['certified'] else 'No alcanza umbral (68)'}")
+                st.caption("✅ = Supera el umbral (68). ❌ = No supera el umbral. LEVIATHAN solo emite señales certificadas.")
+            else:
+                st.warning("No se encontraron activos con dirección definida en este momento.")
 
 # ==================== AUDITORÍA ====================
 st.divider()
@@ -169,7 +177,7 @@ if last:
     try:
         last_ts = datetime.fromisoformat(last["timestamp"])
     except (ValueError, KeyError):
-        st.warning("Timestamp no válido en la señal previa.")
+        st.warning("No se pudo leer el timestamp de la última señal.")
         st.stop()
 
     df = load_cached_data(last.get("symbol", "BTC"), "5m", 50)
@@ -177,21 +185,31 @@ if last:
     future_df = df[mask].head(6)
     audit = audit_last_signal(last, future_df)
 
-    if audit and "status" not in audit:
-        cols = st.columns(2)
-        result = audit.get("result", "N/A")
-        pnl = audit.get("pnl_with_leverage", None)
-        fav = audit.get("max_favorable", None)
-        adv = audit.get("max_adverse", None)
-        dur = audit.get("duration_min", None)
+    if audit:
+        if audit.get("status") == "pending":
+            st.write("⏳ Esperando datos futuros para auditar...")
+        else:
+            cols = st.columns(2)
+            result = audit.get("result", "N/A")
+            pnl = audit.get("pnl_with_leverage")
+            fav = audit.get("max_favorable")
+            adv = audit.get("max_adverse")
+            dur = audit.get("duration_min")
 
-        cols[0].metric("Resultado", result)
-        if pnl is not None:
-            cols[1].metric("PnL teórico", f"{pnl}%")
-        details = f"Favorable: +{fav}% | Adverso: {adv}% | Duración: {dur} min" if fav and adv and dur else "Datos incompletos."
-        st.write(details)
-    elif audit and audit.get("status") == "pending":
-        st.write("Esperando datos futuros...")
+            cols[0].metric("Resultado", result)
+            if pnl is not None:
+                cols[1].metric("PnL teórico", f"{pnl}%")
+            else:
+                cols[1].metric("PnL teórico", "N/A")
+
+            detail = []
+            if fav is not None:
+                detail.append(f"Favorable: +{fav}%")
+            if adv is not None:
+                detail.append(f"Adverso: {adv}%")
+            if dur is not None:
+                detail.append(f"Duración: {dur} min")
+            st.write(" | ".join(detail) if detail else "Datos incompletos.")
     else:
         st.write("No se pudo auditar la señal anterior.")
 else:
