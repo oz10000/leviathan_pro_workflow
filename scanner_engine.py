@@ -24,21 +24,18 @@ def fetch_top_symbols():
             resp = requests.get(url, headers=HEADERS, timeout=15)
             resp.raise_for_status()
             data = resp.json()
+            # Filtrar pares USDT válidos
             symbols = [
-                s
-                for s in data
+                s for s in data
                 if isinstance(s, dict)
                 and s.get("symbol", "").endswith("USDT")
                 and float(s.get("quoteVolume", 0)) >= config.MIN_VOLUME_USD
                 and float(s.get("askPrice", 1)) > 0
-                and (float(s["askPrice"]) - float(s["bidPrice"]))
-                / float(s["askPrice"])
-                * 100
-                <= config.MAX_SPREAD_PCT
+                and (float(s["askPrice"]) - float(s["bidPrice"])) / float(s["askPrice"]) * 100 <= config.MAX_SPREAD_PCT
             ]
-            sorted_syms = sorted(
-                symbols, key=lambda x: float(x["quoteVolume"]), reverse=True
-            )
+            # Eliminar stablecoins y pares no deseados
+            symbols = [s for s in symbols if s["symbol"].replace("USDT", "") not in config.BLACKLIST]
+            sorted_syms = sorted(symbols, key=lambda x: float(x["quoteVolume"]), reverse=True)
             return [s["symbol"] for s in sorted_syms[: config.TOP_N]]
 
         elif config.EXCHANGE == "bybit":
@@ -46,18 +43,15 @@ def fetch_top_symbols():
             resp = requests.get(url, headers=HEADERS, params=params, timeout=15)
             resp.raise_for_status()
             data = resp.json()
-            items = data.get("result", {}).get("list", [])
+            items = data["result"]["list"]
             symbols = [
-                item
-                for item in items
+                item for item in items
                 if item.get("symbol", "").endswith("USDT")
                 and float(item.get("turnover24h", 0) or 0) >= config.MIN_VOLUME_USD
             ]
-            sorted_syms = sorted(
-                symbols,
-                key=lambda x: float(x.get("turnover24h", 0) or 0),
-                reverse=True,
-            )
+            # Eliminar stablecoins
+            symbols = [s for s in symbols if s["symbol"].replace("USDT", "") not in config.BLACKLIST]
+            sorted_syms = sorted(symbols, key=lambda x: float(x.get("turnover24h", 0) or 0), reverse=True)
             return [s["symbol"] for s in sorted_syms[: config.TOP_N]]
 
     except Exception as e:
@@ -108,7 +102,7 @@ def fetch_latest_candle(symbol):
                 items,
                 columns=["ts", "open", "high", "low", "close", "volume", "turnover"]
             )
-            df = df.iloc[::-1]  # Orden cronológico
+            df = df.iloc[::-1]  # orden cronológico
             for c in ["open", "high", "low", "close", "volume"]:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
             df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms")
@@ -121,7 +115,7 @@ def fetch_latest_candle(symbol):
 
 
 def scan_top_opportunities_live(progress_callback=None):
-    """Escanea los top 100 y devuelve las 3 mejores señales."""
+    """Escanea los top 100 y devuelve las 3 mejores señales certificadas (score >= threshold)."""
     symbols_or_error = fetch_top_symbols()
 
     if isinstance(symbols_or_error, dict) and "error" in symbols_or_error:
@@ -162,6 +156,7 @@ def scan_top_opportunities_live(progress_callback=None):
         stats["scanned"] += 1
 
         raw = generate_signal(df, threshold=config.SCORE_THRESHOLD)
+        # Solo conservamos señales que superen el umbral
         if raw["signal"] == "WAIT":
             stats["low_score"] += 1
             continue
