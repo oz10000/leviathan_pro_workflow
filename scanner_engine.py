@@ -2,27 +2,20 @@ import requests
 import pandas as pd
 import time
 from signal_engine import compute_features, generate_signal
-from timing_engine import estimate_next_signal
+from timing_engine import estimate_next_signal, estimate_signal_duration
 from risk_engine import optimal_leverage
 import config
 
-# Cabecera necesaria para evitar bloqueos por falta de User-Agent
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 
 def _get_base_url():
-    """Devuelve la URL base sin restricción geográfica para el exchange actual."""
     return config.ENDPOINTS[config.EXCHANGE]["base_url"]
 
 
 def fetch_top_symbols():
-    """
-    Obtiene los TOP_N símbolos por volumen de 24h.
-    Usa el endpoint sin restricción geográfica.
-    """
     ep = config.ENDPOINTS[config.EXCHANGE]
     url = _get_base_url() + ep["ticker_path"]
 
@@ -31,8 +24,21 @@ def fetch_top_symbols():
             resp = requests.get(url, headers=HEADERS, timeout=15)
             resp.raise_for_status()
             data = resp.json()
-            symbols = [s for s in data if isinstance(s, dict) and s.get("symbol", "").endswith("USDT")]
-            sorted_syms = sorted(symbols, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
+            symbols = [
+                s
+                for s in data
+                if isinstance(s, dict)
+                and s.get("symbol", "").endswith("USDT")
+                and float(s.get("quoteVolume", 0)) >= config.MIN_VOLUME_USD
+                and float(s.get("askPrice", 1)) > 0
+                and (float(s["askPrice"]) - float(s["bidPrice"]))
+                / float(s["askPrice"])
+                * 100
+                <= config.MAX_SPREAD_PCT
+            ]
+            sorted_syms = sorted(
+                symbols, key=lambda x: float(x["quoteVolume"]), reverse=True
+            )
             return [s["symbol"] for s in sorted_syms[: config.TOP_N]]
 
         elif config.EXCHANGE == "bybit":
@@ -41,8 +47,17 @@ def fetch_top_symbols():
             resp.raise_for_status()
             data = resp.json()
             items = data.get("result", {}).get("list", [])
-            symbols = [item for item in items if item.get("symbol", "").endswith("USDT")]
-            sorted_syms = sorted(symbols, key=lambda x: float(x.get("turnover24h", 0)), reverse=True)
+            symbols = [
+                item
+                for item in items
+                if item.get("symbol", "").endswith("USDT")
+                and float(item.get("turnover24h", 0) or 0) >= config.MIN_VOLUME_USD
+            ]
+            sorted_syms = sorted(
+                symbols,
+                key=lambda x: float(x.get("turnover24h", 0) or 0),
+                reverse=True,
+            )
             return [s["symbol"] for s in sorted_syms[: config.TOP_N]]
 
     except Exception as e:
@@ -52,7 +67,6 @@ def fetch_top_symbols():
 
 
 def fetch_latest_candle(symbol):
-    """Descarga las últimas velas de 5min usando el endpoint sin restricción."""
     ep = config.ENDPOINTS[config.EXCHANGE]
 
     if config.EXCHANGE == "binance":
@@ -63,8 +77,13 @@ def fetch_latest_candle(symbol):
             data = resp.json()
             if not data or not isinstance(data, list):
                 return None
-            df = pd.DataFrame(data, columns=["ts", "open", "high", "low", "close", "volume",
-                                             "_", "_", "_", "_", "_", "_"])
+            df = pd.DataFrame(
+                data,
+                columns=[
+                    "ts", "open", "high", "low", "close", "volume",
+                    "_", "_", "_", "_", "_", "_"
+                ]
+            )
             for c in ["open", "high", "low", "close", "volume"]:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
             df["ts"] = pd.to_datetime(df["ts"], unit="ms")
@@ -74,8 +93,10 @@ def fetch_latest_candle(symbol):
             return None
 
     elif config.EXCHANGE == "bybit":
-        url = (f"{_get_base_url()}{ep['klines_path']}"
-               f"?category=linear&symbol={symbol}&interval=5&limit={config.CANDLE_LIMIT}")
+        url = (
+            f"{_get_base_url()}{ep['klines_path']}"
+            f"?category=linear&symbol={symbol}&interval=5&limit={config.CANDLE_LIMIT}"
+        )
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
             resp.raise_for_status()
@@ -83,8 +104,11 @@ def fetch_latest_candle(symbol):
             items = data.get("result", {}).get("list", [])
             if not items:
                 return None
-            df = pd.DataFrame(items, columns=["ts", "open", "high", "low", "close", "volume", "turnover"])
-            df = df.iloc[::-1]  # Orden cronológico (Bybit devuelve invertido)
+            df = pd.DataFrame(
+                items,
+                columns=["ts", "open", "high", "low", "close", "volume", "turnover"]
+            )
+            df = df.iloc[::-1]  # Orden cronológico
             for c in ["open", "high", "low", "close", "volume"]:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
             df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms")
@@ -97,25 +121,26 @@ def fetch_latest_candle(symbol):
 
 
 def scan_top_opportunities_live(progress_callback=None):
-    """
-    Escanea los top 100 y devuelve las 3 mejores señales.
-    También retorna estadísticas del escaneo para diagnóstico.
-    """
+    """Escanea los top 100 y devuelve las 3 mejores señales."""
     symbols_or_error = fetch_top_symbols()
 
-    # Si hubo error al obtener los símbolos
     if isinstance(symbols_or_error, dict) and "error" in symbols_or_error:
         error_msg = symbols_or_error["error"]
         if progress_callback:
             progress_callback(1.0, f"Error al obtener símbolos: {error_msg}")
-        return [], {"scanned": 0, "errors": 1, "low_score": 0, "no_data": 0, "error_msg": error_msg}
+        return [], {
+            "scanned": 0, "errors": 1, "low_score": 0, "no_data": 0,
+            "error_msg": error_msg
+        }
 
     symbols = symbols_or_error
     if not symbols:
         if progress_callback:
             progress_callback(1.0, "No se pudieron obtener símbolos del exchange.")
-        return [], {"scanned": 0, "errors": 1, "low_score": 0, "no_data": 0,
-                     "error_msg": "Lista vacía de símbolos"}
+        return [], {
+            "scanned": 0, "errors": 1, "low_score": 0, "no_data": 0,
+            "error_msg": "Lista vacía de símbolos"
+        }
 
     total = len(symbols)
     signals = []
@@ -136,28 +161,37 @@ def scan_top_opportunities_live(progress_callback=None):
 
         stats["scanned"] += 1
 
-        sig = generate_signal(df, threshold=config.SCORE_THRESHOLD)
-        if sig["signal"] == "WAIT":
+        raw = generate_signal(df, threshold=config.SCORE_THRESHOLD)
+        if raw["signal"] == "WAIT":
             stats["low_score"] += 1
             continue
 
         volatility = df["close"].pct_change().std()
-        lev = optimal_leverage(sig["score"], volatility)
+        lev = optimal_leverage(raw["score"], volatility)
         next_min = estimate_next_signal(df)
+        duration_min = estimate_signal_duration(df)
 
-        clean_sym = sym.replace("USDT", "")
+        clean = sym.replace("USDT", "")
+        entry = raw["price"]
+        atr = raw["atr"]
+        tp = entry + (1 if raw["signal"] == "BUY" else -1) * config.TP_ATR * atr
+        sl = entry - (1 if raw["signal"] == "BUY" else -1) * config.SL_ATR * atr
+        confidence = min(100, raw["score"] * 1.1)
 
         signals.append({
-            "symbol": clean_sym,
-            "signal": sig["signal"],
-            "price": sig["price"],
-            "score": sig["score"],
+            "symbol": clean,
+            "signal": raw["signal"],
+            "price": entry,
+            "score": raw["score"],
             "leverage": lev,
             "next_min": next_min,
-            "timestamp": sig["timestamp"]
+            "duration_min": duration_min,
+            "tp": tp,
+            "sl": sl,
+            "confidence": confidence,
+            "timestamp": raw["timestamp"],
+            "atr": atr
         })
-
-        # Pequeña pausa para no saturar la API
         time.sleep(0.05)
 
     signals.sort(key=lambda x: x["score"], reverse=True)
