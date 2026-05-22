@@ -1,13 +1,17 @@
+import pandas as pd
+
+
 def audit_last_signal(last_signal, df_future):
     """
     Evalúa el resultado de la última señal usando datos posteriores.
-    df_future: DataFrame con velas posteriores a la señal (debe contener 'close').
     """
-    if not last_signal or last_signal["signal"] == "WAIT":
+    if not last_signal or last_signal.get("signal") == "WAIT":
         return None
-    entry = last_signal["price"]
+
+    entry = float(last_signal["price"])
     direction = last_signal["signal"]
-    if df_future.empty:
+
+    if df_future is None or df_future.empty:
         return {"status": "pending"}
 
     future_prices = df_future["close"].values
@@ -23,5 +27,5 @@ def audit_last_signal(last_signal, df_future):
         "pnl_pct": round(pnl_pct * 100, 2),
         "result": "WIN" if pnl_pct > 0 else "LOSS",
         "max_favorable": round(best_move * 100, 2),
-        "max_adverse": round(worst_move * 100, 2)
+        "max_adverse": round(worst_move * 100, 2),
     }
