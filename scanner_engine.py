@@ -6,48 +6,57 @@ from timing_engine import estimate_next_signal
 from risk_engine import optimal_leverage
 import config
 
-# Cabecera necesaria para que las APIs no bloqueen la petición
+# Cabecera necesaria para evitar bloqueos por falta de User-Agent
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 
+def _get_base_url():
+    """Devuelve la URL base sin restricción geográfica para el exchange actual."""
+    return config.ENDPOINTS[config.EXCHANGE]["base_url"]
+
+
 def fetch_top_symbols():
-    """Obtiene los TOP_N símbolos por volumen de 24h en el exchange configurado."""
-    if config.EXCHANGE == "binance":
-        url = "https://api.binance.com/api/v3/ticker/24hr"
-        try:
+    """
+    Obtiene los TOP_N símbolos por volumen de 24h.
+    Usa el endpoint sin restricción geográfica.
+    """
+    ep = config.ENDPOINTS[config.EXCHANGE]
+    url = _get_base_url() + ep["ticker_path"]
+
+    try:
+        if config.EXCHANGE == "binance":
             resp = requests.get(url, headers=HEADERS, timeout=15)
             resp.raise_for_status()
             data = resp.json()
             symbols = [s for s in data if isinstance(s, dict) and s.get("symbol", "").endswith("USDT")]
             sorted_syms = sorted(symbols, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-            result = [s["symbol"] for s in sorted_syms[: config.TOP_N]]
-            return result
-        except Exception as e:
-            return {"error": str(e)}
+            return [s["symbol"] for s in sorted_syms[: config.TOP_N]]
 
-    elif config.EXCHANGE == "bybit":
-        url = "https://api.bybit.com/v5/market/tickers?category=linear"
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=15)
+        elif config.EXCHANGE == "bybit":
+            params = {"category": "linear"}
+            resp = requests.get(url, headers=HEADERS, params=params, timeout=15)
             resp.raise_for_status()
             data = resp.json()
             items = data.get("result", {}).get("list", [])
             symbols = [item for item in items if item.get("symbol", "").endswith("USDT")]
             sorted_syms = sorted(symbols, key=lambda x: float(x.get("turnover24h", 0)), reverse=True)
-            result = [s["symbol"] for s in sorted_syms[: config.TOP_N]]
-            return result
-        except Exception as e:
-            return {"error": str(e)}
+            return [s["symbol"] for s in sorted_syms[: config.TOP_N]]
+
+    except Exception as e:
+        return {"error": str(e)}
 
     return {"error": "Exchange no soportado"}
 
 
 def fetch_latest_candle(symbol):
-    """Descarga las últimas velas de 5min para un símbolo."""
+    """Descarga las últimas velas de 5min usando el endpoint sin restricción."""
+    ep = config.ENDPOINTS[config.EXCHANGE]
+
     if config.EXCHANGE == "binance":
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit={config.CANDLE_LIMIT}"
+        url = f"{_get_base_url()}{ep['klines_path']}?symbol={symbol}&interval=5m&limit={config.CANDLE_LIMIT}"
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
             resp.raise_for_status()
@@ -65,7 +74,8 @@ def fetch_latest_candle(symbol):
             return None
 
     elif config.EXCHANGE == "bybit":
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=5&limit={config.CANDLE_LIMIT}"
+        url = (f"{_get_base_url()}{ep['klines_path']}"
+               f"?category=linear&symbol={symbol}&interval=5&limit={config.CANDLE_LIMIT}")
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
             resp.raise_for_status()
@@ -74,7 +84,7 @@ def fetch_latest_candle(symbol):
             if not items:
                 return None
             df = pd.DataFrame(items, columns=["ts", "open", "high", "low", "close", "volume", "turnover"])
-            df = df.iloc[::-1]  # Orden cronológico
+            df = df.iloc[::-1]  # Orden cronológico (Bybit devuelve invertido)
             for c in ["open", "high", "low", "close", "volume"]:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
             df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms")
@@ -89,11 +99,11 @@ def fetch_latest_candle(symbol):
 def scan_top_opportunities_live(progress_callback=None):
     """
     Escanea los top 100 y devuelve las 3 mejores señales.
-    Además retorna un diccionario con estadísticas del escaneo.
+    También retorna estadísticas del escaneo para diagnóstico.
     """
     symbols_or_error = fetch_top_symbols()
 
-    # Si fetch_top_symbols devolvió un error (es un dict con clave "error")
+    # Si hubo error al obtener los símbolos
     if isinstance(symbols_or_error, dict) and "error" in symbols_or_error:
         error_msg = symbols_or_error["error"]
         if progress_callback:
@@ -104,7 +114,8 @@ def scan_top_opportunities_live(progress_callback=None):
     if not symbols:
         if progress_callback:
             progress_callback(1.0, "No se pudieron obtener símbolos del exchange.")
-        return [], {"scanned": 0, "errors": 1, "low_score": 0, "no_data": 0, "error_msg": "Lista vacía de símbolos"}
+        return [], {"scanned": 0, "errors": 1, "low_score": 0, "no_data": 0,
+                     "error_msg": "Lista vacía de símbolos"}
 
     total = len(symbols)
     signals = []
@@ -146,7 +157,8 @@ def scan_top_opportunities_live(progress_callback=None):
             "timestamp": sig["timestamp"]
         })
 
-        time.sleep(0.05)   # Respetar rate‑limit
+        # Pequeña pausa para no saturar la API
+        time.sleep(0.05)
 
     signals.sort(key=lambda x: x["score"], reverse=True)
     return signals[:3], stats
