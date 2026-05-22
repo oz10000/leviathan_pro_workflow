@@ -10,7 +10,7 @@ import config
 
 st.set_page_config(page_title="LEVIATHAN SIGNAL", layout="centered", initial_sidebar_state="collapsed")
 
-# Tema oscuro profesional
+# Tema oscuro profesional minimalista
 st.markdown(f"""
 <style>
     .stApp {{ background-color: #0E1117; color: #F0F2F6; }}
@@ -45,9 +45,8 @@ if "active_signal" not in st.session_state:
     st.session_state.active_signal = None
     st.session_state.signal_expiry = None
 
-# Botón de escaneo
+# Botón de escaneo normal
 if st.button("🔍 Escanear Mercado", use_container_width=True):
-    # Preparamos la barra de progreso y un texto de estado
     progress_bar = st.progress(0)
     status_text = st.empty()
 
@@ -58,7 +57,6 @@ if st.button("🔍 Escanear Mercado", use_container_width=True):
     with st.spinner("Escaneando los 100 activos más líquidos..."):
         top_signals, log = scan_top_opportunities_live(progress_callback=update_progress)
 
-    # Limpiamos los indicadores de progreso
     progress_bar.empty()
     status_text.empty()
 
@@ -70,7 +68,6 @@ if st.button("🔍 Escanear Mercado", use_container_width=True):
         st.success(f"Señal detectada: {best['signal']} en {best['symbol']}")
     else:
         st.warning("No se encontraron señales que cumplan los criterios.")
-        # Mostrar diagnóstico detallado
         with st.expander("🔍 Diagnóstico del escaneo"):
             st.write(f"Activos escaneados: {log.get('scanned', 0)}")
             st.write(f"Errores de API: {log.get('errors', 0)}")
@@ -79,6 +76,38 @@ if st.button("🔍 Escanear Mercado", use_container_width=True):
             if log.get("error_msg"):
                 st.error(f"Mensaje del error: {log['error_msg']}")
             st.caption("Si 'escaneados' es 0 y 'Errores de API' > 0, verifica tu conexión o que la API esté accesible.")
+
+# Botón de diagnóstico forzado (muestra top 5 sin filtrar)
+if st.button("🔎 Forzar top 5 (sin filtrar)", use_container_width=True):
+    with st.spinner("Escaneando sin umbral..."):
+        # Llamada especial que devuelve todos los candidatos, no solo los > threshold
+        from scanner_engine import fetch_top_symbols, fetch_latest_candle, generate_signal, compute_features
+        syms = fetch_top_symbols()
+        all_sigs = []
+        for sym in syms[:30]:  # limitamos a 30 para no saturar
+            df = fetch_latest_candle(sym)
+            if df is not None and len(df) >= 20:
+                raw = generate_signal(df, threshold=0)   # Forzamos threshold a 0 para ver todo
+                if raw["signal"] != "WAIT":
+                    tp = raw["price"] + (1 if raw["signal"]=="BUY" else -1) * config.TP_ATR * raw["atr"]
+                    sl = raw["price"] - (1 if raw["signal"]=="BUY" else -1) * config.SL_ATR * raw["atr"]
+                    all_sigs.append({
+                        "symbol": sym.replace("USDT",""),
+                        "signal": raw["signal"],
+                        "price": raw["price"],
+                        "score": raw["score"],
+                        "tp": tp,
+                        "sl": sl
+                    })
+        all_sigs.sort(key=lambda x: x["score"], reverse=True)
+        top5 = all_sigs[:5]
+        if top5:
+            st.subheader("Top 5 puntuaciones del mercado (sin filtrar por umbral)")
+            for i, s in enumerate(top5, 1):
+                st.write(f"**{i}. {s['symbol']}** – {s['signal']} | Score: {s['score']:.1f} | Entrada: ${s['price']:.4f} | TP: ${s['tp']:.4f} | SL: ${s['sl']:.4f}")
+            st.caption("Estas señales no superaron el umbral de calidad (68). LEVIATHAN prefiere no operar a arriesgar capital en condiciones mediocres.")
+        else:
+            st.warning("Ni siquiera bajando el umbral se encontraron señales. El mercado está completamente sin dirección.")
 
 # Mostrar señal activa
 if st.session_state.active_signal and st.session_state.signal_expiry is not None:
