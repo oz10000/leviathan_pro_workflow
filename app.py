@@ -1,130 +1,138 @@
 import streamlit as st
 import time
+from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
 from scanner_engine import scan_top_opportunities_live
 from audit_engine import audit_last_signal
 from state_manager import save_last_signal, load_last_signal, append_audit_result
 from data_loader import load_cached_data
 import config
 
-st.set_page_config(page_title="LEVIATHAN Multi‑Exchange Scanner", layout="wide")
-st.title("🐋 LEVIATHAN – Scanner Multi‑Activo")
+st.set_page_config(page_title="LEVIATHAN SIGNAL", layout="centered", initial_sidebar_state="collapsed")
 
-# --- Selección de exchange con botones ---
-col1, col2, col3 = st.columns([1, 1, 4])
+# Tema oscuro profesional minimalista
+st.markdown(f"""
+<style>
+    .stApp {{ background-color: #0E1117; color: #F0F2F6; }}
+    .signal-box {{
+        background-color: #1E2130; border-radius: 16px; padding: 24px;
+        margin: 16px 0; text-align: center;
+    }}
+    .signal-buy {{ color: #00FFAA; font-weight: bold; font-size: 2rem; }}
+    .signal-sell {{ color: #FF4D4D; font-weight: bold; font-size: 2rem; }}
+    .timer {{ font-size: 1.5rem; font-weight: bold; color: #FFA500; }}
+    .metric-label {{ font-size: 0.85rem; color: #888; }}
+    .metric-value {{ font-size: 1.2rem; font-weight: bold; }}
+    h2 {{ color: #00FFAA; }}
+    hr {{ border-color: #2E3345; }}
+    .step {{ padding: 6px 0; }}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🐋 LEVIATHAN SIGNAL")
+
+# Selección de exchange con botones compactos
+col1, col2 = st.columns(2)
 with col1:
     if st.button("🔶 Binance"):
         config.EXCHANGE = "binance"
-        st.success("Exchange cambiado a Binance")
 with col2:
     if st.button("🔷 Bybit"):
         config.EXCHANGE = "bybit"
-        st.success("Exchange cambiado a Bybit")
-st.write(f"**Exchange actual:** `{config.EXCHANGE.upper()}`")
+st.caption(f"Exchange: **{config.EXCHANGE.upper()}**")
 
-# --- Estado de señal activa ---
+# Inicializar estado de señal activa
 if "active_signal" not in st.session_state:
     st.session_state.active_signal = None
     st.session_state.signal_expiry = None
-    st.session_state.signal_window_min = 5   # validez de la señal en minutos
 
-# ========================
-#  BOTÓN DE ESCANEO
-# ========================
-if st.button("🔍 Escanear Top 100"):
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    start_time = time.time()
+# Botón de escaneo
+if st.button("🔍 Escanear Mercado", use_container_width=True):
+    with st.spinner("Escaneando los 100 activos más líquidos..."):
+        top_signals, log = scan_top_opportunities_live(
+            progress_callback=lambda p, msg: None  # sin barra, solo espera
+        )
+        if top_signals:
+            best = top_signals[0]
+            st.session_state.active_signal = best
+            st.session_state.signal_expiry = time.time() + best["duration_min"] * 60
+            save_last_signal(best)
+        else:
+            st.warning("No se encontraron señales que cumplan los criterios.")
 
-    top_signals, scan_log = scan_top_opportunities_live(
-        progress_callback=lambda p, msg: (progress_bar.progress(p), status_text.text(msg))
-    )
-
-    elapsed = time.time() - start_time
-    status_text.text(f"Escaneo completado en {elapsed:.1f} s — {len(top_signals)} señales encontradas")
-    progress_bar.progress(1.0)
-
-    if not top_signals:
-        st.warning("No se encontraron señales por encima del umbral.")
-        with st.expander("🔍 Diagnóstico del escaneo"):
-            st.write(f"Activos escaneados: {scan_log.get('scanned', 0)}")
-            st.write(f"Errores de API: {scan_log.get('errors', 0)}")
-            st.write(f"Señales descartadas (score bajo): {scan_log.get('low_score', 0)}")
-            st.write(f"Activos sin datos suficientes: {scan_log.get('no_data', 0)}")
-            if scan_log.get("error_msg"):
-                st.error(f"Mensaje del error: {scan_log['error_msg']}")
-            st.caption("Si 'escaneados' es 0 y 'Errores de API' > 0, verifica tu conexión o que la API esté accesible.")
-    else:
-        # Guardar la mejor señal como activa
-        best = top_signals[0]
-        st.session_state.active_signal = best
-        st.session_state.signal_expiry = time.time() + st.session_state.signal_window_min * 60
-
-        st.success(f"✅ SEÑAL ACTIVA — {config.EXCHANGE.upper()}")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Activo", best["symbol"])
-        col2.metric("Dirección", best["signal"])
-        col3.metric("Score", f"{best['score']:.1f}")
-        col4.metric("Apalancamiento", f"{best['leverage']:.1f}x")
-        st.write(f"💲 Precio de referencia: **${best['price']:.4f}**")
-        st.write(f"⏳ Ventana de validez: **{st.session_state.signal_window_min} minutos** (caduca a las {time.strftime('%H:%M:%S', time.localtime(st.session_state.signal_expiry))})")
-        st.write(f"🕐 Próxima señal estimada en: **{best['next_min']} minutos**")
-        save_last_signal(best)
-
-        with st.expander(f"📋 Top 3 señales en {config.EXCHANGE.upper()}"):
-            for i, sig in enumerate(top_signals, 1):
-                cols = st.columns([1, 1, 1, 1, 2])
-                cols[0].write(f"**#{i} {sig['symbol']}**")
-                cols[1].write(f"{sig['signal']}")
-                cols[2].write(f"Score: {sig['score']:.1f}")
-                cols[3].write(f"⚡{sig['leverage']:.1f}x")
-                cols[4].write(f"⏳ próx. señal: {sig['next_min']}min")
-
-# ========================
-#  SEÑAL ACTIVA (si existe y no ha expirado)
-# ========================
+# Mostrar señal activa
 if st.session_state.active_signal:
+    sig = st.session_state.active_signal
     remaining = st.session_state.signal_expiry - time.time()
     if remaining > 0:
-        st.divider()
-        st.subheader("🟢 SEÑAL ACTIVA VIGENTE")
         mins, secs = divmod(int(remaining), 60)
-        st.info(f"⏰ **Tiempo restante para operar: {mins} min {secs} s** — Señal {st.session_state.active_signal['signal']} en {st.session_state.active_signal['symbol']} | Score: {st.session_state.active_signal['score']:.1f} | Apalancamiento: {st.session_state.active_signal['leverage']:.1f}x")
-        st.caption("La señal se actualizará automáticamente al expirar.")
+        st_autorefresh(interval=1000, key="countdown")
+        st.markdown(f"""
+        <div class="signal-box">
+            <p class="metric-label">ACTIVO</p>
+            <p class="metric-value">{sig['symbol']}</p>
+            <p class="metric-label">DIRECCIÓN</p>
+            <p class="{'signal-buy' if sig['signal']=='BUY' else 'signal-sell'}">{sig['signal']}</p>
+            <p class="metric-label">PRECIO DE ENTRADA</p>
+            <p class="metric-value">${sig['price']:.4f}</p>
+            <p class="metric-label">TAKE PROFIT</p>
+            <p class="metric-value">${sig['tp']:.4f}</p>
+            <p class="metric-label">STOP LOSS</p>
+            <p class="metric-value">${sig['sl']:.4f}</p>
+            <p class="metric-label">APALANCAMIENTO</p>
+            <p class="metric-value">{sig['leverage']:.1f}x</p>
+            <p class="metric-label">TIEMPO RESTANTE</p>
+            <p class="timer">{mins} min {secs} s</p>
+            <p class="metric-label">CONFIANZA</p>
+            <p class="metric-value">{sig['confidence']:.0f}%</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Instrucciones paso a paso
+        with st.expander("✅ Cómo ejecutar esta operación"):
+            st.markdown("""
+            1. Abrir el exchange seleccionado.
+            2. Verificar si estás en **DEMO** o **LIVE**.
+            3. Buscar el activo exacto.
+            4. Confirmar que el precio esté cerca de la entrada.
+            5. Configurar: entrada, take profit, stop loss.
+            6. Usar el apalancamiento recomendado.
+            7. Revisar todos los datos y ejecutar manualmente.
+
+            ⚠️ Si el tiempo restante es bajo, espera la próxima señal.
+            """)
     else:
         st.session_state.active_signal = None
         st.session_state.signal_expiry = None
-        st.divider()
-        st.subheader("⏳ WAIT – Señal expirada")
-        st.info("La ventana de validez terminó. Vuelve a escanear para obtener una nueva señal.")
+        st.info("La señal expiró. Vuelve a escanear.")
 else:
-    st.divider()
-    st.subheader("⏳ ESTADO: SIN SEÑAL ACTIVA")
-    st.info("Actualmente no hay ninguna señal vigente. El mercado no ha alcanzado el umbral de puntuación necesario (score ≥ 68).")
-    st.write("Puedes presionar **'Escanear Top 100'** para reevaluar el mercado.")
-    st.caption("La puntuación se calcula con EMA, RSI, volumen y pendiente de tendencia sobre los últimos 50 candles de 5 minutos.")
+    st.info("No hay señal activa. Escanea el mercado para recibir una oportunidad.")
 
-# ========================
-#  AUDITORÍA DE ÚLTIMA SEÑAL
-# ========================
+# Auditoría simple de la última señal
 st.divider()
-st.subheader("📊 Auditoría de la última señal emitida")
+st.subheader("📊 Auditoría de la última señal")
 last = load_last_signal()
 if last:
+    # Convertir timestamp a datetime
+    try:
+        last_ts = datetime.fromisoformat(last["timestamp"])
+    except (ValueError, KeyError):
+        st.warning("No se pudo leer el timestamp de la última señal.")
+        st.stop()
+
     df = load_cached_data(last.get("symbol", "BTC"), "5m", 50)
-    mask = df["ts"] > last["timestamp"]
+    mask = df["ts"] > last_ts
     future_df = df[mask].head(6)
     audit = audit_last_signal(last, future_df)
     if audit:
-        audit["signal"] = last["signal"]
-        append_audit_result(audit)
-        colA, colB = st.columns(2)
-        colA.metric("Resultado", audit["result"], delta=f"{audit['pnl_pct']}%")
-        colB.metric("Mov. favorable máx.", f"{audit['max_favorable']}%")
-        st.write(f"Adverso máx.: {audit['max_adverse']}%")
+        cols = st.columns(2)
+        cols[0].metric("Resultado", audit["result"])
+        cols[1].metric("PnL teórico", f"{audit['pnl_with_leverage']}%")
+        st.write(f"Movimiento favorable: +{audit['max_favorable']}% | Adverso: {audit['max_adverse']}% | Duración: {audit.get('duration_min', 'N/A')} min")
     else:
-        st.info("Aún no han transcurrido 30 minutos desde la última señal.")
+        st.write("Esperando datos futuros para auditar...")
 else:
-    st.info("No hay señal previa almacenada.")
+    st.write("Aún no hay señal previa.")
 
 st.divider()
-st.caption(f"⏱️ Última actualización: {time.strftime('%H:%M:%S')} | Exchange: {config.EXCHANGE.upper()} | Umbral de score: {config.SCORE_THRESHOLD} | Apalancamiento: {config.LEVERAGE_MIN}x–{config.LEVERAGE_MAX}x")
+st.caption("LEVIATHAN — Terminal de señales manuales · Parámetros validados por backtest de 30 días")
