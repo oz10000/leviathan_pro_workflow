@@ -4,7 +4,6 @@ from scanner_engine import scan_top_opportunities_live
 from audit_engine import audit_last_signal
 from state_manager import save_last_signal, load_last_signal, append_audit_result
 from data_loader import load_cached_data
-from timing_engine import estimate_next_signal
 import config
 
 st.set_page_config(page_title="LEVIATHAN Multi‑Exchange Scanner", layout="wide")
@@ -22,22 +21,20 @@ with col2:
         st.success("Exchange cambiado a Bybit")
 st.write(f"**Exchange actual:** `{config.EXCHANGE.upper()}`")
 
-# --- Inicializar estado de señal activa ---
+# --- Estado de señal activa ---
 if "active_signal" not in st.session_state:
-    st.session_state.active_signal = None       # dict de la señal vigente
-    st.session_state.signal_expiry = None        # timestamp cuando expira
-    st.session_state.signal_window_min = 5        # ventana de validez en minutos
+    st.session_state.active_signal = None
+    st.session_state.signal_expiry = None
+    st.session_state.signal_window_min = 5   # validez de la señal en minutos
 
 # ========================
 #  BOTÓN DE ESCANEO
 # ========================
 if st.button("🔍 Escanear Top 100"):
-    # ---- Barra de progreso + marcador de tiempo ----
     progress_bar = st.progress(0)
     status_text = st.empty()
     start_time = time.time()
 
-    # Actualizamos el estado del exchange por si se cambió
     top_signals, scan_log = scan_top_opportunities_live(
         progress_callback=lambda p, msg: (progress_bar.progress(p), status_text.text(msg))
     )
@@ -48,15 +45,16 @@ if st.button("🔍 Escanear Top 100"):
 
     if not top_signals:
         st.warning("No se encontraron señales por encima del umbral.")
-        # Mostrar diagnóstico de lo que sí se escaneó
         with st.expander("🔍 Diagnóstico del escaneo"):
             st.write(f"Activos escaneados: {scan_log.get('scanned', 0)}")
             st.write(f"Errores de API: {scan_log.get('errors', 0)}")
             st.write(f"Señales descartadas (score bajo): {scan_log.get('low_score', 0)}")
             st.write(f"Activos sin datos suficientes: {scan_log.get('no_data', 0)}")
-            st.caption("Si 'escaneados' es 0, verifica tu conexión o la API del exchange.")
+            if scan_log.get("error_msg"):
+                st.error(f"Mensaje del error: {scan_log['error_msg']}")
+            st.caption("Si 'escaneados' es 0 y 'Errores de API' > 0, verifica tu conexión o que la API esté accesible.")
     else:
-        # ---- Guardar la mejor señal como señal activa ----
+        # Guardar la mejor señal como activa
         best = top_signals[0]
         st.session_state.active_signal = best
         st.session_state.signal_expiry = time.time() + st.session_state.signal_window_min * 60
@@ -72,7 +70,6 @@ if st.button("🔍 Escanear Top 100"):
         st.write(f"🕐 Próxima señal estimada en: **{best['next_min']} minutos**")
         save_last_signal(best)
 
-        # Tabla de las 3 mejores señales
         with st.expander(f"📋 Top 3 señales en {config.EXCHANGE.upper()}"):
             for i, sig in enumerate(top_signals, 1):
                 cols = st.columns([1, 1, 1, 1, 2])
@@ -83,7 +80,7 @@ if st.button("🔍 Escanear Top 100"):
                 cols[4].write(f"⏳ próx. señal: {sig['next_min']}min")
 
 # ========================
-#  MOSTRAR SEÑAL ACTIVA (si aún no expiró)
+#  SEÑAL ACTIVA (si existe y no ha expirado)
 # ========================
 if st.session_state.active_signal:
     remaining = st.session_state.signal_expiry - time.time()
@@ -94,16 +91,11 @@ if st.session_state.active_signal:
         st.info(f"⏰ **Tiempo restante para operar: {mins} min {secs} s** — Señal {st.session_state.active_signal['signal']} en {st.session_state.active_signal['symbol']} | Score: {st.session_state.active_signal['score']:.1f} | Apalancamiento: {st.session_state.active_signal['leverage']:.1f}x")
         st.caption("La señal se actualizará automáticamente al expirar.")
     else:
-        # Expiró → WAIT
         st.session_state.active_signal = None
         st.session_state.signal_expiry = None
         st.divider()
         st.subheader("⏳ WAIT – Señal expirada")
         st.info("La ventana de validez terminó. Vuelve a escanear para obtener una nueva señal.")
-
-# ========================
-#  SI NO HAY SEÑAL ACTIVA → MOSTRAR ESTADO DEL MERCADO
-# ========================
 else:
     st.divider()
     st.subheader("⏳ ESTADO: SIN SEÑAL ACTIVA")
@@ -134,8 +126,5 @@ if last:
 else:
     st.info("No hay señal previa almacenada.")
 
-# ========================
-#  PIE DE PÁGINA
-# ========================
 st.divider()
 st.caption(f"⏱️ Última actualización: {time.strftime('%H:%M:%S')} | Exchange: {config.EXCHANGE.upper()} | Umbral de score: {config.SCORE_THRESHOLD} | Apalancamiento: {config.LEVERAGE_MIN}x–{config.LEVERAGE_MAX}x")
