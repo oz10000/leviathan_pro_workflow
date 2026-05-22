@@ -1,31 +1,45 @@
 import requests
 import pandas as pd
+import time
 from signal_engine import compute_features, generate_signal
 from timing_engine import estimate_next_signal
 from risk_engine import optimal_leverage
-import config   # Ahora usamos el módulo config completo
+import config
+
 
 def fetch_top_symbols():
-    """Obtiene los TOP_N símbolos según el exchange configurado."""
+    """Obtiene los TOP_N símbolos por volumen de 24h en el exchange configurado."""
     if config.EXCHANGE == "binance":
         url = "https://api.binance.com/api/v3/ticker/24hr"
         try:
-            data = requests.get(url, timeout=10).json()
-            symbols = [s for s in data if s.get("symbol", "").endswith("USDT")]
-            sorted_syms = sorted(symbols, key=lambda x: float(x["quoteVolume"]), reverse=True)
-            return [s["symbol"] for s in sorted_syms[:config.TOP_N]]
-        except Exception:
+            data = requests.get(url, timeout=15).json()
+            # Filtrar solo pares que terminen en USDT
+            symbols = [s for s in data if isinstance(s, dict) and s.get("symbol", "").endswith("USDT")]
+            # Ordenar por quoteVolume (volumen en USDT) descendente
+            sorted_syms = sorted(symbols, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
+            result = [s["symbol"] for s in sorted_syms[: config.TOP_N]]
+            return result
+        except Exception as e:
+            print(f"[ERROR] fetch_top_symbols Binance: {e}")
             return []
+
     elif config.EXCHANGE == "bybit":
         url = "https://api.bybit.com/v5/market/tickers?category=linear"
         try:
-            resp = requests.get(url, timeout=10).json()
-            items = resp["result"]["list"]
-            symbols = [item["symbol"] for item in items if item["symbol"].endswith("USDT")]
-            return symbols[:config.TOP_N]
-        except Exception:
+            resp = requests.get(url, timeout=15).json()
+            items = resp.get("result", {}).get("list", [])
+            # Filtrar solo pares que terminen en USDT
+            symbols = [item for item in items if item.get("symbol", "").endswith("USDT")]
+            # Ordenar por turnover24h (volumen en USDT) descendente
+            sorted_syms = sorted(symbols, key=lambda x: float(x.get("turnover24h", 0)), reverse=True)
+            result = [s["symbol"] for s in sorted_syms[: config.TOP_N]]
+            return result
+        except Exception as e:
+            print(f"[ERROR] fetch_top_symbols Bybit: {e}")
             return []
+
     return []
+
 
 def fetch_latest_candle(symbol):
     """Descarga las últimas velas de 5min para un símbolo."""
@@ -33,46 +47,85 @@ def fetch_latest_candle(symbol):
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit={config.CANDLE_LIMIT}"
         try:
             data = requests.get(url, timeout=10).json()
-            df = pd.DataFrame(data, columns=["ts","open","high","low","close","volume","_","_","_","_","_","_"])
-            for c in ["open","high","low","close","volume"]:
+            if not data or not isinstance(data, list):
+                return None
+            df = pd.DataFrame(data, columns=["ts", "open", "high", "low", "close", "volume",
+                                             "_", "_", "_", "_", "_", "_"])
+            for c in ["open", "high", "low", "close", "volume"]:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
             df["ts"] = pd.to_datetime(df["ts"], unit="ms")
             return compute_features(df)
-        except Exception:
+        except Exception as e:
+            print(f"[ERROR] fetch_latest_candle Binance {symbol}: {e}")
             return None
+
     elif config.EXCHANGE == "bybit":
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=5&limit={config.CANDLE_LIMIT}"
         try:
             resp = requests.get(url, timeout=10).json()
-            data = resp["result"]["list"]
-            df = pd.DataFrame(data, columns=["ts","open","high","low","close","volume","turnover"])
-            df = df.iloc[::-1]  # Orden cronológico
-            for c in ["open","high","low","close","volume"]:
+            data = resp.get("result", {}).get("list", [])
+            if not data:
+                return None
+            df = pd.DataFrame(data, columns=["ts", "open", "high", "low", "close", "volume", "turnover"])
+            df = df.iloc[::-1]  # Orden cronológico (Bybit devuelve en orden inverso)
+            for c in ["open", "high", "low", "close", "volume"]:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
             df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms")
             return compute_features(df)
-        except Exception:
+        except Exception as e:
+            print(f"[ERROR] fetch_latest_candle Bybit {symbol}: {e}")
             return None
+
     return None
 
-def scan_top_opportunities():
-    """Escanea los top 100 y devuelve las 3 mejores señales."""
+
+def scan_top_opportunities_live(progress_callback=None):
+    """
+    Escanea los top 100 y devuelve las 3 mejores señales.
+    Además retorna un diccionario con estadísticas del escaneo.
+    """
     symbols = fetch_top_symbols()
     if not symbols:
-        return []
+        if progress_callback:
+            progress_callback(1.0, "Error: no se pudieron obtener símbolos del exchange.")
+        return [], {"scanned": 0, "errors": 1, "low_score": 0, "no_data": 0}
+
+    total = len(symbols)
     signals = []
-    for sym in symbols:
+    stats = {"scanned": 0, "errors": 0, "low_score": 0, "no_data": 0}
+
+    for i, sym in enumerate(symbols):
+        # Actualizar barra de progreso
+        if progress_callback:
+            pct = (i + 1) / total
+            progress_callback(pct, f"Escaneando {i+1}/{total}: {sym}...")
+
+        # Descargar y procesar
         df = fetch_latest_candle(sym)
-        if df is None or len(df) < 20:
+        if df is None:
+            stats["errors"] += 1
             continue
+        if len(df) < 20:
+            stats["no_data"] += 1
+            continue
+
+        stats["scanned"] += 1
+
         sig = generate_signal(df, threshold=config.SCORE_THRESHOLD)
         if sig["signal"] == "WAIT":
+            stats["low_score"] += 1
             continue
+
+        # Calcular métricas adicionales
         volatility = df["close"].pct_change().std()
         lev = optimal_leverage(sig["score"], volatility)
         next_min = estimate_next_signal(df)
+
+        # Limpiar nombre del símbolo
+        clean_sym = sym.replace("USDT", "")
+
         signals.append({
-            "symbol": sym.replace("USDT","") if config.EXCHANGE=="binance" else sym.replace("USDT",""),
+            "symbol": clean_sym,
             "signal": sig["signal"],
             "price": sig["price"],
             "score": sig["score"],
@@ -80,5 +133,10 @@ def scan_top_opportunities():
             "next_min": next_min,
             "timestamp": sig["timestamp"]
         })
+
+        # Pequeña pausa para no saturar la API
+        time.sleep(0.05)
+
+    # Ordenar por score descendente y devolver top 3
     signals.sort(key=lambda x: x["score"], reverse=True)
-    return signals[:3]
+    return signals[:3], stats
