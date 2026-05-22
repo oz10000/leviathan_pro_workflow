@@ -10,7 +10,7 @@ import config
 
 st.set_page_config(page_title="LEVIATHAN SIGNAL", layout="centered", initial_sidebar_state="collapsed")
 
-# Tema oscuro profesional minimalista
+# Tema oscuro profesional
 st.markdown(f"""
 <style>
     .stApp {{ background-color: #0E1117; color: #F0F2F6; }}
@@ -31,7 +31,7 @@ st.markdown(f"""
 
 st.title("🐋 LEVIATHAN SIGNAL")
 
-# Selección de exchange con botones compactos
+# Selección de exchange
 col1, col2 = st.columns(2)
 with col1:
     if st.button("🔶 Binance"):
@@ -41,27 +41,46 @@ with col2:
         config.EXCHANGE = "bybit"
 st.caption(f"Exchange: **{config.EXCHANGE.upper()}**")
 
-# Inicializar estado de señal activa
 if "active_signal" not in st.session_state:
     st.session_state.active_signal = None
     st.session_state.signal_expiry = None
 
 # Botón de escaneo
 if st.button("🔍 Escanear Mercado", use_container_width=True):
-    with st.spinner("Escaneando los 100 activos más líquidos..."):
-        top_signals, log = scan_top_opportunities_live(
-            progress_callback=lambda p, msg: None  # sin barra, solo espera
-        )
-        if top_signals:
-            best = top_signals[0]
-            st.session_state.active_signal = best
-            # Usar duración mínima 5 minutos si falta la clave
-            st.session_state.signal_expiry = time.time() + best.get("duration_min", 5) * 60
-            save_last_signal(best)
-        else:
-            st.warning("No se encontraron señales que cumplan los criterios.")
+    # Preparamos la barra de progreso y un texto de estado
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
-# Mostrar señal activa (solo si hay señal y el tiempo de expiración es válido)
+    def update_progress(pct, msg):
+        progress_bar.progress(pct)
+        status_text.text(msg)
+
+    with st.spinner("Escaneando los 100 activos más líquidos..."):
+        top_signals, log = scan_top_opportunities_live(progress_callback=update_progress)
+
+    # Limpiamos los indicadores de progreso
+    progress_bar.empty()
+    status_text.empty()
+
+    if top_signals:
+        best = top_signals[0]
+        st.session_state.active_signal = best
+        st.session_state.signal_expiry = time.time() + best.get("duration_min", 5) * 60
+        save_last_signal(best)
+        st.success(f"Señal detectada: {best['signal']} en {best['symbol']}")
+    else:
+        st.warning("No se encontraron señales que cumplan los criterios.")
+        # Mostrar diagnóstico detallado
+        with st.expander("🔍 Diagnóstico del escaneo"):
+            st.write(f"Activos escaneados: {log.get('scanned', 0)}")
+            st.write(f"Errores de API: {log.get('errors', 0)}")
+            st.write(f"Señales descartadas (score bajo): {log.get('low_score', 0)}")
+            st.write(f"Activos sin datos suficientes: {log.get('no_data', 0)}")
+            if log.get("error_msg"):
+                st.error(f"Mensaje del error: {log['error_msg']}")
+            st.caption("Si 'escaneados' es 0 y 'Errores de API' > 0, verifica tu conexión o que la API esté accesible.")
+
+# Mostrar señal activa
 if st.session_state.active_signal and st.session_state.signal_expiry is not None:
     sig = st.session_state.active_signal
     remaining = st.session_state.signal_expiry - time.time()
@@ -89,7 +108,6 @@ if st.session_state.active_signal and st.session_state.signal_expiry is not None
         </div>
         """, unsafe_allow_html=True)
 
-        # Instrucciones paso a paso
         with st.expander("✅ Cómo ejecutar esta operación"):
             st.markdown("""
             1. Abrir el exchange seleccionado.
@@ -103,14 +121,13 @@ if st.session_state.active_signal and st.session_state.signal_expiry is not None
             ⚠️ Si el tiempo restante es bajo, espera la próxima señal.
             """)
     else:
-        # La señal expiró, limpiar estado
         st.session_state.active_signal = None
         st.session_state.signal_expiry = None
         st.info("La señal expiró. Vuelve a escanear.")
 else:
     st.info("No hay señal activa. Escanea el mercado para recibir una oportunidad.")
 
-# Auditoría simple de la última señal
+# Auditoría de la última señal
 st.divider()
 st.subheader("📊 Auditoría de la última señal")
 last = load_last_signal()
